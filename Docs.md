@@ -47,26 +47,26 @@ Quá trình so khớp sử dụng **Cosine Similarity** trên không gian đặc
   - *Ý nghĩa hệ số Alpha:* Alpha hoạt động như một nhiệt độ (temperature) scale. Giá trị Alpha lớn giúp phân phối Softmax sắc nét (peaked) hơn, phóng đại khoảng cách giữa các điểm khớp tốt và các điểm nhiễu, từ đó làm tăng độ phân giải của cực đại cục bộ.
   - *Giới hạn giá trị:* Quá trình áp dụng Softmax và lấy căn bậc hai đảm bảo "Score Map" cuối cùng luôn hội tụ trong khoảng giá trị `[0.0, 1.0]`, biểu diễn chính xác độ tự tin (confidence score).
 
-### 3.4. Hậu xử lý (Post-processing)
+### 3.4. Hậu xử lý
 Thực chất bước này hoạt động phức tạp và khác biệt so với NMS (Non-Maximum Suppression) thông thường. Quá trình này (hàm `extract_bboxes_from_heatmap_multi`) trải qua 5 bước:
 
 1. **Lọc tương đối toàn cục:** Hệ thống đánh giá sơ bộ điểm số cực đại (max score) của tất cả template. Những template nào có điểm cực đại nhỏ hơn 10% so với điểm cao nhất toàn cục sẽ bị loại bỏ hoàn toàn.
 2. **Lọc đỉnh cục bộ:** Trên Score Map của mỗi template còn lại, hệ thống không dùng một ngưỡng cố định (absolute threshold) mà trích xuất các pixel có điểm số cao hơn một ngưỡng tương đối: `(thresh * điểm_cực_đại_của_chính_template_đó)`. Cách làm này đảm bảo rằng template nào cũng có cơ hội tìm ra được "vị trí tốt nhất" của nó (local peaks).
 3. **Chuyển đổi thành Bounding Box & Sắp xếp:** 
    - *Đồng bộ không gian:* Trước đó, Score Map (vốn bị thu nhỏ ở tầng Feature Map) đã được phóng to (upscale) về đúng kích thước pixel của ảnh gốc. 
-   - *Xác định tọa độ:* Mỗi pixel (đỉnh cục bộ) thỏa mãn điều kiện ở bước 2 mang ý nghĩa là **tọa độ tâm (center)** của đối tượng trên ảnh thật.
+   - *Xác định tọa độ:* Mỗi pixel (đỉnh cục bộ) thỏa mãn điều kiện ở bước 2 mang ý nghĩa là **tọa độ tâm** của đối tượng trên ảnh thật.
    - *Nội suy Bounding Box:* Từ tọa độ tâm `(x_center, y_center)`, hệ thống bù trừ dựa trên chiều rộng (W) và chiều cao (H) thực tế của template tương ứng để tính ra tọa độ góc hộp (ví dụ: `x1 = x_center - W/2`, `y1 = y_center - H/2`).
    - Toàn bộ box ứng viên sau đó được gộp chung lại và sắp xếp theo điểm số tự tin từ cao xuống thấp.
 4. **Xóa bỏ chồng chéo nghiêm ngặt:** 
    - Box có điểm cao nhất luôn được giữ lại.
-   - Hệ thống xóa bỏ tất cả các box còn lại nếu có diện tích giao nhau (IoU) với box chuẩn > 0.05. Điểm khác biệt cốt lõi với NMS thường: NMS tiêu chuẩn dùng ngưỡng IoU 0.4 - 0.5 để xóa các box miêu tả *cùng một* đối tượng. Ở đây, ngưỡng IoU cực thấp (0.05) giả định rằng các template **không được phép đè lên nhau hoặc giao nhau**. Mọi sự giao cắt dù là nhỏ nhất (5%) đều bị triệt tiêu để giữ lại box tự tin hơn.
-5. **Lọc theo ngưỡng tự tin (Absolute Confidence Threshold):** Sau bước trên, hệ thống mới áp dụng một ngưỡng độ tin cậy tuyệt đối (cấu hình qua giao diện UI - `conf_thresh`) để loại bỏ các box có điểm số quá thấp, đảm bảo chỉ hiển thị các kết quả có độ chính xác cao nhất.
+   - Hệ thống xóa bỏ tất cả các box còn lại nếu có diện tích giao nhau (IoU) với box chuẩn > 0.05.
+5. **Lọc theo ngưỡng tự tin:** Sau bước trên, hệ thống mới áp dụng một ngưỡng độ tin cậy tuyệt đối (`conf_thresh`) để loại bỏ các box có điểm số quá thấp, đảm bảo chỉ hiển thị các kết quả có độ chính xác cao nhất.
 
 ## 4. Đánh giá ưu/nhược điểm của phương pháp đã chọn
 
 **Ưu điểm:**
-- **Tính ổn định (Robustness) cao:** Do khớp nối trên không gian ngữ nghĩa, hệ thống bỏ qua được nhiễu pixel, các nét đứt đoạn, thay đổi phông nền mà phương pháp cũ bó tay.
-- **Phát hiện mọi góc xoay (Rotation-invariant):** Giải quyết dứt điểm rào cản tìm kiếm các đối tượng bị lệch hoặc vẽ xoay ngược thông qua pipeline 8 góc độ kết hợp NMS thông minh.
+- **Tính ổn định cao:** Do khớp nối trên không gian ngữ nghĩa, hệ thống bỏ qua được nhiễu pixel, các nét đứt đoạn, thay đổi phông nền mà phương pháp cũ bó tay.
+- **Phát hiện mọi góc xoay:** Giải quyết dứt điểm rào cản tìm kiếm các đối tượng bị lệch hoặc vẽ xoay ngược thông qua pipeline 8 góc độ kết hợp NMS thông minh.
 - **Dễ dàng tuỳ biến:** Có thể thay đổi ngưỡng confidence hoặc đổi backbone nhẹ hơn (MobileNet) để chạy trên máy yếu.
 
 **Nhược điểm:**
