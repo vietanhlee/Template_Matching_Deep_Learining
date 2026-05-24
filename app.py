@@ -152,7 +152,8 @@ def _run_matching(
                 'confidence': conf,
             })
 
-        result_bgr = plot_result_multi(dataset.image_raw, boxes, indices, show=False, confidences=confidences)
+        base_indices = indices // len(dataset.angles)
+        result_bgr = plot_result_multi(dataset.image_raw, boxes, base_indices, show=False, confidences=confidences)
         result_rgb = cv2.cvtColor(result_bgr, cv2.COLOR_BGR2RGB)
         return result_rgb, detections
 
@@ -175,7 +176,7 @@ def build_app() -> gr.Blocks:
             with gr.Column():
                 sample_image = gr.Image(label='Sample image', type='numpy')
                 gr.Examples(
-                    examples=[["sample/sample2.png"], ["sample/sample1.jpg"]],
+                    examples=[["sample/sample2.png"]],
                     inputs=sample_image,
                     label="Ảnh mẫu (Sample) ví dụ"
                 )
@@ -191,11 +192,6 @@ def build_app() -> gr.Blocks:
                 
                 gr.Examples(
                     examples=[
-                        ["template/template1_1.png"],
-                        ["template/template1_2.png"],
-                        ["template/template1_3.png"],
-                        ["template/template1_4.png"],
-                        ["template/template1_dummy.png"],
                         ["template/template_2_1.png"],
                         ["template/template_2_2.png"],
                         ["template/template_2_3.png"],
@@ -230,11 +226,11 @@ def build_app() -> gr.Blocks:
                 )
 
         with gr.Row():
-            alpha = gr.Slider(minimum=1, maximum=100, value= 25, step= 0.5, label='Alpha', info='Hệ số điều chỉnh softmax (alpha càng lớn, kết quả matching càng "gắt" và loại bỏ noise tốt hơn nhưng dễ hụt object).')
+            alpha = gr.Slider(minimum=1, maximum=100, value= 20, step= 0.5, label='Alpha', info='Hệ số điều chỉnh softmax (alpha càng lớn, kết quả matching càng "gắt" và loại bỏ noise tốt hơn nhưng dễ hụt object).')
             thresh = gr.Slider(minimum=0.1, maximum=1.0, value=0.2, step=0.01, label='Threshold NMS', info='Ngưỡng NMS tương đối để giữ lại bbox cục bộ (Mặc định: 0.7).')
-            conf_thresh = gr.Slider(minimum=0.0, maximum=1.0, value=0.06, step=0.01, label='Confidence Threshold', info='Ngưỡng độ tin cậy tuyệt đối để lọc bbox sau cùng (Mặc định: 0.5).')
+            conf_thresh = gr.Slider(minimum=0.0, maximum=1.0, value=0.07, step=0.01, label='Confidence Threshold', info='Ngưỡng độ tin cậy tuyệt đối để lọc bbox sau cùng (Mặc định: 0.5).')
             template_scale = gr.Slider(minimum=0.1, maximum=3.0, value=1.0, step=0.1, label='Template Scale', info='Tỉ lệ thu phóng template. Giảm < 1.0 nếu template to hơn thực tế, tăng > 1.0 nếu nhỏ hơn.')
-            model_name = gr.Dropdown(choices=['convnext_tiny', 'efficientnet_b4', 'mobilenet_v3'], value='efficientnet_b4', label='Backbone Model', info='Chọn mô hình trích xuất đặc trưng.')
+            model_name = gr.Dropdown(choices=['convnext_tiny', 'efficientnet_b4', 'mobilenet_v3'], value='convnext_tiny', label='Backbone Model', info='Chọn mô hình trích xuất đặc trưng.')
 
         run_button = gr.Button('Run Template Matching')
         output_image = gr.Image(label='BBox result')
