@@ -80,7 +80,7 @@ Thực chất bước này hoạt động phức tạp và khác biệt so với
   2. **Feature Pyramid Network (FPN):** Sử dụng các kiến trúc có nhánh phụ như FPN, tổng hợp đặc trưng ở đa mức phân giải (multi-resolution), giúp tìm kiếm đối tượng ở mọi kích cỡ mà không cần tạo hàng chục template thủ công.
   3. **Xuất mô hình (Export Model):** Biến đổi toàn bộ pipeline backbone sang chuẩn ONNX hoặc TensorRT để tận dụng tối đa băng thông phần cứng, cắt giảm 50% thời gian xử lý so với PyTorch gốc.
 
-## 6. Kết quả benchmark trên test cases tự tạo0
+## 6. Đánh giá 
 - **Test Case 1: Đối tượng ở góc xoay chuẩn (0 độ), rõ nét.**
   - **Độ chính xác (Recall):** phát hiện tốt các đối tượng 
   - **Cảnh báo giả (False Positive Rate):** vẫn đang có 1 - 2 box 
