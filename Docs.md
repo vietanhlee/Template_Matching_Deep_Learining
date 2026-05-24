@@ -43,9 +43,9 @@ Quá trình so khớp sử dụng **Cosine Similarity** trên không gian đặc
   1. *Z-score Normalization:* Tính `mean` và `std` trên toàn bộ tập pixel của ảnh gốc và template để chuẩn hóa `(x - mean) / std`, giúp cân bằng cường độ đặc trưng.
   2. *L2 Normalization:* Từng vector đặc trưng tại mỗi pixel được chuẩn hóa độ dài L2.
 - **Tính độ tương đồng:** Sử dụng tích vô hướng (thông qua hàm `torch.einsum`) trượt template trên ảnh gốc. Đối với các vector đã chuẩn hóa L2, tích vô hướng chính là giá trị Cosine Similarity.
-- **Tính điểm tự tin (Confidence Score):** Thay vì sử dụng trực tiếp giá trị Cosine, ma trận kết quả được nhân với hệ số **Alpha** và đưa qua hàm Softmax 2 chiều.
-  - *Ý nghĩa hệ số Alpha:* Alpha hoạt động như một nhiệt độ (temperature) scale. Giá trị Alpha lớn giúp phân phối Softmax sắc nét (peaked) hơn, phóng đại khoảng cách giữa các điểm khớp tốt và các điểm nhiễu, từ đó làm tăng độ phân giải của cực đại cục bộ.
-  - *Giới hạn giá trị:* Quá trình áp dụng Softmax và lấy căn bậc hai đảm bảo "Score Map" cuối cùng luôn hội tụ trong khoảng giá trị `[0.0, 1.0]`, biểu diễn chính xác độ tự tin (confidence score).
+- **Tính Confidence Score:** Thay vì sử dụng trực tiếp giá trị Cosine, ma trận kết quả được nhân với hệ số **Alpha** và đưa qua hàm Softmax 2 chiều.
+  - *Ý nghĩa hệ số Alpha:* Alpha hoạt động như một temperature scale. Giá trị Alpha lớn giúp phân phối Softmax sắc nét hơn, phóng đại khoảng cách giữa các điểm khớp tốt và các điểm nhiễu, từ đó làm tăng độ phân giải của cực đại cục bộ.
+  - *Giới hạn giá trị:* Quá trình áp dụng Softmax và lấy căn bậc hai đảm bảo "Score Map" cuối cùng luôn hội tụ trong khoảng giá trị `[0.0, 1.0]`, biểu diễn chính xác confidence score.
 
 ### 3.4. Hậu xử lý
 Thực chất bước này hoạt động phức tạp và khác biệt so với NMS (Non-Maximum Suppression) thông thường. Quá trình này (hàm `extract_bboxes_from_heatmap_multi`) trải qua 5 bước:
@@ -53,8 +53,8 @@ Thực chất bước này hoạt động phức tạp và khác biệt so với
 1. **Lọc tương đối toàn cục:** Hệ thống đánh giá sơ bộ điểm số cực đại (max score) của tất cả template. Những template nào có điểm cực đại nhỏ hơn 10% so với điểm cao nhất toàn cục sẽ bị loại bỏ hoàn toàn.
 2. **Lọc đỉnh cục bộ:** Trên Score Map của mỗi template còn lại, hệ thống không dùng một ngưỡng cố định (absolute threshold) mà trích xuất các pixel có điểm số cao hơn một ngưỡng tương đối: `(thresh * điểm_cực_đại_của_chính_template_đó)`. Cách làm này đảm bảo rằng template nào cũng có cơ hội tìm ra được "vị trí tốt nhất" của nó (local peaks).
 3. **Chuyển đổi thành Bounding Box & Sắp xếp:** 
-   - *Đồng bộ không gian:* Trước đó, Score Map (vốn bị thu nhỏ ở tầng Feature Map) đã được phóng to (upscale) về đúng kích thước pixel của ảnh gốc. 
-   - *Xác định tọa độ:* Mỗi pixel (đỉnh cục bộ) thỏa mãn điều kiện ở bước 2 mang ý nghĩa là **tọa độ tâm** của đối tượng trên ảnh thật.
+   - *Đồng bộ không gian:* Trước đó, Score Map (vốn bị thu nhỏ ở tầng Feature Map) đã được upscale về đúng kích thước pixel của ảnh gốc. 
+   - *Xác định tọa độ:* Mỗi pixel thỏa mãn điều kiện ở bước 2 mang ý nghĩa là **tọa độ tâm** của đối tượng trên ảnh thật.
    - *Nội suy Bounding Box:* Từ tọa độ tâm `(x_center, y_center)`, hệ thống bù trừ dựa trên chiều rộng (W) và chiều cao (H) thực tế của template tương ứng để tính ra tọa độ góc hộp (ví dụ: `x1 = x_center - W/2`, `y1 = y_center - H/2`). Phần này ý nghĩa tương tự như anchor free trong Object Detection, chỉ khác mỗi chỗ là các kích thước sẽ được hồi quy nhưng ở đây ta đi nội suy từ kích thước template gốc ra do cần thời gian inference nhanh và đề bài là zero-shot. Tuy nhiên nếu phần cứng đủ mạnh ta có thể nội suy theo từng tỉ lệ cạnh khác nhau sau đó crop ảnh ra và so với template gốc để tìm ra kích thước box cho độ tương đồng cao nhất.
    - Toàn bộ box ứng viên sau đó được gộp chung lại và sắp xếp theo điểm số tự tin từ cao xuống thấp.
 4. **Xóa bỏ chồng chéo nghiêm ngặt:** 
