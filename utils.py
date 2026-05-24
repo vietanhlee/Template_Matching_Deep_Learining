@@ -11,8 +11,8 @@ import torch
 import torch.nn.functional as F
 from typing import List, Tuple, Any, Dict, Optional, Union
 from pathlib import Path
-
-int_ = lambda x: int(round(x))
+import copy
+from torch import nn
 
 class ImageDataset(torch.utils.data.Dataset):
     def __init__(self, template_dir_path: Union[str, Path], image_name: str, thresh: float = 0.7, template_scale: float = 1.0, transform: Optional[transforms.Compose] = None) -> None:
@@ -169,15 +169,20 @@ def plot_result(image_raw: np.ndarray, boxes: np.ndarray, show: bool = False, sa
     return d_img
 
 
-def nms(score: np.ndarray, w_ini: int, h_ini: int, thresh: float = 0.7) -> np.ndarray:
+def extract_bboxes_from_heatmap(score: np.ndarray, w_ini: int, h_ini: int, thresh: float = 0.7) -> np.ndarray:
     """
-    Thực hiện Non-maximum suppression (lọc tối đa cục bộ) cho một template.
+    Trích xuất các bounding box từ ma trận điểm số (heatmap) của một template và loại bỏ trùng lặp.
+    
+    Cách hoạt động:
+    1. Lọc tương đối: Chỉ lấy những vị trí pixel có điểm số lớn hơn (thresh * điểm_cực_đại_của_template_này).
+    2. Chuyển đổi các pixel ứng viên thành tọa độ bounding box.
+    3. Áp dụng thuật toán giống NMS (IoU threshold = 0.5) để loại bỏ các box trùng lấn, giữ lại vị trí tốt nhất.
     
     Args:
-        score (np.ndarray): Ma trận điểm số (confidence map).
+        score (np.ndarray): Ma trận điểm số (confidence map) sinh ra từ phép convolution.
         w_ini (int): Chiều rộng của template.
         h_ini (int): Chiều cao của template.
-        thresh (float): Ngưỡng để giữ lại bbox (so với điểm cực đại).
+        thresh (float): Ngưỡng tương đối (relative threshold) để lọc ứng viên ban đầu.
         
     Returns:
         np.ndarray: Mảng tọa độ các bounding box được giữ lại.
@@ -216,21 +221,27 @@ def nms(score: np.ndarray, w_ini: int, h_ini: int, thresh: float = 0.7) -> np.nd
     return boxes
 
 
-def nms_multi(scores: np.ndarray, w_array: np.ndarray, h_array: np.ndarray, thresh_list: List[float]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def extract_bboxes_from_heatmap_multi(scores: np.ndarray, w_array: np.ndarray, h_array: np.ndarray, thresh_list: List[float]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Gom các ứng viên từ nhiều template rồi chạy NMS tổng thể một lần.
+    Trích xuất các bounding box từ ma trận điểm số của nhiều template và loại bỏ sự chồng chéo.
+    
+    Hàm này không thực hiện NMS tiêu chuẩn mà hoạt động qua 4 bước:
+    1. Lọc template (Global relative thresholding): Bỏ qua hoàn toàn các template có điểm số cực đại nhỏ hơn 10% điểm cực đại tuyệt đối của toàn bộ tập template.
+    2. Lọc ứng viên (Local relative thresholding): Trên mỗi template còn lại, lấy ra các pixel (ứng viên) có điểm số > (thresh * điểm_cực_đại_của_template_đó).
+    3. Tạo Box: Chuyển các pixel ứng viên thành tọa độ bounding box và gộp tất cả lại, sắp xếp theo điểm số tuyệt đối từ cao xuống thấp.
+    4. Xóa chồng chéo (Strict Suppression): Giữ lại box có điểm cao nhất, và xóa bỏ gần như hoàn toàn các box khác có diện tích giao nhau (IoU) > 0.05. Ngưỡng IoU cực thấp này giả định rằng các template (hoặc các đối tượng) không được phép đè lên nhau.
     
     Args:
-        scores (np.ndarray): Mảng các ma trận điểm số của tất cả template.
+        scores (np.ndarray): Mảng các ma trận điểm số (heatmaps) của tất cả template.
         w_array (np.ndarray): Chiều rộng các template tương ứng.
         h_array (np.ndarray): Chiều cao các template tương ứng.
-        thresh_list (List[float]): Danh sách các ngưỡng áp dụng cho từng template.
+        thresh_list (List[float]): Danh sách ngưỡng lọc cục bộ áp dụng cho từng template.
         
     Returns:
         Tuple[np.ndarray, np.ndarray, np.ndarray]: 
-            - Mảng bounding box được giữ lại.
+            - Mảng tọa độ bounding box được giữ lại.
             - Mảng chỉ số template gốc của từng box.
-            - Điểm số tự tin của từng box.
+            - Mảng điểm số tuyệt đối của từng box.
     """
     indices = np.arange(scores.shape[0])
     maxes = np.max(scores.reshape(scores.shape[0], -1), axis=1)
@@ -249,7 +260,7 @@ def nms_multi(scores: np.ndarray, w_array: np.ndarray, h_array: np.ndarray, thre
             dots_indices = np.concatenate([dots_indices, np.ones(dot.shape[-1]) * index], axis=0)
 
     if dots is None or dots.size == 0:
-        return np.empty((0, 2, 2), dtype=int), np.array([], dtype=int)
+        return np.empty((0, 2, 2), dtype=int), np.array([], dtype=int), np.array([], dtype=float)
 
     dots_indices = dots_indices.astype(int)
     x1 = dots[1] - w_array[dots_indices] // 2
@@ -325,104 +336,39 @@ def plot_result_multi(image_raw: np.ndarray, boxes: np.ndarray, indices: np.ndar
     return d_img
 
 
-def run_one_sample(model: Any, template: torch.Tensor, image: torch.Tensor, image_name: str) -> np.ndarray:
+def normalize_features(x1: torch.Tensor, x2: torch.Tensor) -> List[torch.Tensor]:
     """
-    Chấm điểm 1 template trên 1 ảnh mẫu.
-    
-    Args:
-        model (Any): Lớp điều khiển pipeline (CreateModel).
-        template (torch.Tensor): Tensor đặc trưng của ảnh template.
-        image (torch.Tensor): Tensor đặc trưng của ảnh mẫu.
-        image_name (str): Tên ảnh mẫu (để cache feature).
-        
-    Returns:
-        np.ndarray: Ma trận điểm số kết quả sau khi chuẩn hóa ngược.
+    Chuẩn hóa (Normalize) các đặc trưng để chúng nằm trên cùng một thang đo.
     """
-    val = model(template, image, image_name)
-    if val.is_cuda:
-        val = val.cpu()
-    val = val.numpy()
-    val = np.log(val)
+    bs, _, H, W = x1.size()
+    _, _, h, w = x2.size()
+    eps = 1e-12
+    x1 = x1.view(bs, -1, H * W)
+    x2 = x2.view(bs, -1, h * w)
+    concat = torch.cat((x1, x2), dim=2)
+    x_mean = torch.mean(concat, dim=2, keepdim=True)
+    x_std = torch.std(concat, dim=2, keepdim=True)
+    x1 = (x1 - x_mean) / (x_std + eps)
+    x2 = (x2 - x_mean) / (x_std + eps)
+    x1 = x1.view(bs, -1, H, W)
+    x2 = x2.view(bs, -1, h, w)
+    return [x1, x2]
 
-    batch_size = val.shape[0]
-    scores = []
-    for i in range(batch_size):
-        gray = val[i, :, :, 0]
-        gray = cv2.resize(gray, (image.size()[-1], image.size()[-2]))
-        h = template.size()[-2]
-        w = template.size()[-1]
-        score = compute_score(gray, w, h)
-        score[score > -1e-7] = score.min()
-        score = np.exp(score / (h * w))
-        scores.append(score)
-    return np.array(scores)
-
-
-def run_multi_sample(model: Any, dataset: ImageDataset) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[float]]:
+def compute_softmax_score(x: torch.Tensor, alpha: float) -> torch.Tensor:
     """
-    Chạy toàn bộ các template trong dataset trên cùng 1 ảnh mẫu.
-    
-    Args:
-        model (Any): Pipeline thực hiện template matching.
-        dataset (ImageDataset): Dataset chứa danh sách template và 1 ảnh mẫu.
-        
-    Returns:
-        Tuple[np.ndarray, np.ndarray, np.ndarray, List[float]]: 
-            - Ma trận điểm số tổng hợp.
-            - Mảng chứa chiều rộng các template.
-            - Mảng chứa chiều cao các template.
-            - Danh sách các ngưỡng áp dụng cho từng template.
+    Tính điểm số (confidence) bằng cách sử dụng softmax đa chiều.
     """
-    scores = []
-    w_array = []
-    h_array = []
-    thresh_list = []
-    for data in dataset:
-        score = run_one_sample(model, data['template'], data['image'], data['image_name'])
-        scores.append(score)
-        w_array.append(data['template_w'])
-        h_array.append(data['template_h'])
-        thresh_list.append(data['thresh'])
-    return np.squeeze(np.array(scores), axis=1), np.array(w_array), np.array(h_array), thresh_list
+    batch_size, ref_row, ref_col, qry_row, qry_col = x.size()
+    x = x.view(batch_size, ref_row * ref_col, qry_row * qry_col)
+    xm_ref = x - torch.max(x, dim=1, keepdim=True)[0]
+    xm_qry = x - torch.max(x, dim=2, keepdim=True)[0]
+    confidence = torch.sqrt(
+        F.softmax(alpha * xm_ref, dim=1) * F.softmax(alpha * xm_qry, dim=2)
+    )
+    conf_values, _ = torch.topk(confidence, 1)
+    return conf_values.view(batch_size, ref_row, ref_col, 1)
 
 
-def IoU(r1: Union[List, Tuple, np.ndarray], r2: Union[List, Tuple, np.ndarray]) -> float:
-    """
-    Tính chỉ số Intersection over Union (IoU) giữa 2 bounding box.
-    
-    Args:
-        r1 (Union[List, Tuple, np.ndarray]): Box 1 định dạng [x, y, w, h].
-        r2 (Union[List, Tuple, np.ndarray]): Box 2 định dạng [x, y, w, h].
-        
-    Returns:
-        float: Giá trị IoU (từ 0 đến 1).
-    """
-    x11, y11, w1, h1 = r1
-    x21, y21, w2, h2 = r2
-    x12 = x11 + w1; y12 = y11 + h1
-    x22 = x21 + w2; y22 = y21 + h2
-    x_overlap = max(0, min(x12,x22) - max(x11,x21) )
-    y_overlap = max(0, min(y12,y22) - max(y11,y21) )
-    I = 1. * x_overlap * y_overlap
-    U = (y12-y11)*(x12-x11) + (y22-y21)*(x22-x21) - I
-    J = I/U
-    return J
-
-
-def evaluate_iou(rect_gt: List, rect_pred: List) -> List[float]:
-    """
-    Đánh giá IoU cho một danh sách ground truth và prediction tương ứng.
-    
-    Args:
-        rect_gt (List): Danh sách các box ground truth.
-        rect_pred (List): Danh sách các box dự đoán.
-        
-    Returns:
-        List[float]: Danh sách điểm số IoU.
-    """
-    # Tính điểm số iou
-    score = [IoU(i, j) for i, j in zip(rect_gt, rect_pred)]
-    return score
 
 
 def compute_score(x: np.ndarray, w: int, h: int) -> np.ndarray:
@@ -448,82 +394,4 @@ def compute_score(x: np.ndarray, w: int, h: int) -> np.ndarray:
     return score
 
 
-def locate_bbox(a: np.ndarray, w: int, h: int) -> Tuple[float, float, int, int]:
-    """
-    Xác định vị trí bounding box (tọa độ cực đại) dựa trên điểm phân bổ lớn nhất.
-    
-    Args:
-        a (np.ndarray): Ma trận điểm.
-        w (int): Chiều rộng template.
-        h (int): Chiều cao template.
-        
-    Returns:
-        Tuple[float, float, int, int]: Bounding box tốt nhất định dạng (x, y, w, h).
-    """
-    row = np.argmax(np.max(a, axis=1))
-    col = np.argmax( np.max(a, axis=0) )
-    x = col - 1. * w / 2
-    y = row - 1. * h / 2
-    return x, y, w, h
 
-
-def score2curve(score: Union[List, np.ndarray], thres_delta: float = 0.01) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Chuyển đổi điểm số thành biểu đồ đánh giá (Success Rate Curve).
-    
-    Args:
-        score (Union[List, np.ndarray]): Danh sách/Mảng điểm số.
-        thres_delta (float): Bước nhảy của ngưỡng (threshold).
-        
-    Returns:
-        Tuple[np.ndarray, np.ndarray]: Ngưỡng phân bố và tỷ lệ thành công tương ứng.
-    """
-    thres = np.linspace(0, 1, int(1. / thres_delta) + 1)
-    success_num = []
-    for th in thres:
-        success_num.append( np.sum(score >= (th+1e-6)) )
-    success_rate = np.array(success_num) / len(score)
-    return thres, success_rate
-
-
-def all_sample_iou(score_list: List[np.ndarray], gt_list: List[Union[List, Tuple]]) -> List[float]:
-    """
-    Tính toán IoU cho tất cả các mẫu trong bộ danh sách kết quả và ground truth.
-    
-    Args:
-        score_list (List[np.ndarray]): Danh sách ma trận điểm dự đoán.
-        gt_list (List[Union[List, Tuple]]): Danh sách ground truth.
-        
-    Returns:
-        List[float]: Danh sách mức độ chồng chéo (IoU).
-    """
-    num_samples = len(score_list)
-    iou_list = []
-    for idx in range(num_samples):
-        score, image_gt = score_list[idx], gt_list[idx]
-        w, h = image_gt[2:]
-        pred_rect = locate_bbox( score, w, h )
-        iou = IoU( image_gt, pred_rect )
-        iou_list.append( iou )
-    return iou_list
-
-
-def plot_success_curve(iou_score: Union[List, np.ndarray], title: str = '') -> None:
-    """
-    Vẽ biểu đồ tỷ lệ thành công (Success Rate Curve) dựa trên điểm IoU.
-    
-    Args:
-        iou_score (Union[List, np.ndarray]): Điểm số IoU của các dự đoán.
-        title (str): Tiêu đề của biểu đồ.
-    """
-    thres, success_rate = score2curve(iou_score, thres_delta=0.05)
-    # Tính diện tích AUC theo giao thức đánh giá truyền thống
-    auc_ = np.mean(success_rate[:-1])
-    plt.figure()
-    plt.grid(True)
-    plt.xticks(np.linspace(0,1,11))
-    plt.yticks(np.linspace(0,1,11))
-    plt.ylim(0, 1)
-    plt.title(title + 'auc={}'.format(auc_))
-    plt.plot( thres, success_rate )
-    plt.show()

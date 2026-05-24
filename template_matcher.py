@@ -1,171 +1,163 @@
-from pathlib import Path
 import copy
+from typing import List, Tuple, Any, Dict, Union
+from pathlib import Path
 
 import cv2
+import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F
-from torchvision import transforms
-from utils import ImageDataset
 
-from typing import List, Tuple, Any
+from utils import (
+    ImageDataset, 
+    build_feature_extractor, 
+    extract_bboxes_from_heatmap_multi, 
+    plot_result_multi, 
+    normalize_features, 
+    compute_softmax_score, 
+    compute_score
+)
 
-class Featex:
-    def __init__(self, model: nn.Module, use_cuda: bool) -> None:
+class TemplateMatcher:
+    def __init__(self, model: nn.Module, use_cuda: bool = True) -> None:
         """
-        Khởi tạo bộ trích xuất đặc trưng (Feature Extractor) từ các mô hình backbone.
-        Chỉ sử dụng 1 luồng trích xuất duy nhất (single scale) để tăng tốc độ.
+        Khởi tạo hệ thống khớp mẫu (Template Matcher).
         
         Args:
-            model (nn.Module): Mô hình mạng CNN (MobileNetV2, EfficientNet, ConvNeXt).
-            use_cuda (bool): Cờ xác định có sử dụng GPU hay không.
+            model (nn.Module): Backbone CNN đã được khởi tạo.
+            use_cuda (bool): Sử dụng GPU.
         """
-        self.use_cuda = use_cuda
+        self.use_cuda = use_cuda and torch.cuda.is_available()
         self.model = copy.deepcopy(model.eval())
         
         for param in self.model.parameters():
             param.requires_grad = False
         if self.use_cuda:
             self.model = self.model.cuda()
-
-    def __call__(self, input_tensor: torch.Tensor, mode: str = 'big') -> torch.Tensor:
-        """
-        Thực hiện trích xuất đặc trưng cho ảnh/tensor đầu vào.
-        
-        Args:
-            input_tensor (torch.Tensor): Tensor hình ảnh đầu vào.
-            mode (str): Biến dư thừa từ phiên bản cũ, giữ lại để tương thích signature.
             
-        Returns:
-            torch.Tensor: Tensor đặc trưng đầu ra.
-        """
-        if self.use_cuda:
-            input_tensor = input_tensor.cuda()
-            
-        return self.model(input_tensor)
-
-
-class MyNormLayer:
-    def __call__(self, x1: torch.Tensor, x2: torch.Tensor) -> List[torch.Tensor]:
-        """
-        Chuẩn hóa (Normalize) các đặc trưng để chúng nằm trên cùng một thang đo.
-        
-        Args:
-            x1 (torch.Tensor): Đặc trưng 1 (ví dụ: ảnh mẫu).
-            x2 (torch.Tensor): Đặc trưng 2 (ví dụ: template).
-            
-        Returns:
-            List[torch.Tensor]: Danh sách chứa 2 tensor đã được chuẩn hóa.
-        """
-        # Chuẩn hóa template feature và image feature trên cùng một khoảng giá trị.
-        bs, _, H, W = x1.size()
-        _, _, h, w = x2.size()
-        eps = 1e-12
-        x1 = x1.view(bs, -1, H * W)
-        x2 = x2.view(bs, -1, h * w)
-        concat = torch.cat((x1, x2), dim=2)
-        x_mean = torch.mean(concat, dim=2, keepdim=True)
-        x_std = torch.std(concat, dim=2, keepdim=True)
-        x1 = (x1 - x_mean) / (x_std + eps)
-        x2 = (x2 - x_mean) / (x_std + eps)
-        x1 = x1.view(bs, -1, H, W)
-        x2 = x2.view(bs, -1, h, w)
-        return [x1, x2]
-
-
-class CreateModel:
-    def __init__(self, alpha: float, model: nn.Module, use_cuda: bool) -> None:
-        """
-        Khởi tạo hộp điều khiển luồng (pipeline) chính cho việc khớp mẫu.
-        
-        Args:
-            alpha (float): Hệ số alpha điều chỉnh hàm softmax (càng lớn càng gắt).
-            model (nn.Module): Backbone CNN (VGG19).
-            use_cuda (bool): Sử dụng GPU.
-        """
-        # Đây là bộ điều khiển luồng (pipeline): feature extraction -> matching -> confidence.
-        self.alpha = alpha
-        self.featex = Featex(model, use_cuda)
         self.I_feat = None
         self.I_feat_name = None
 
-    def __call__(self, template: torch.Tensor, image: torch.Tensor, image_name: str) -> torch.Tensor:
-        """
-        Tính toán ma trận độ tin cậy (confidence map) giữa template và ảnh mẫu.
-        
-        Args:
-            template (torch.Tensor): Tensor ảnh template.
-            image (torch.Tensor): Tensor ảnh mẫu lớn.
-            image_name (str): Tên file của ảnh mẫu để tận dụng bộ nhớ đệm (cache).
-            
-        Returns:
-            torch.Tensor: Ma trận điểm tin cậy (confidence maps).
-        """
-        # Template được xử lý lại mỗi lần, còn ảnh (image) chỉ tính toán lại đặc trưng khi tên ảnh thay đổi.
-        T_feat = self.featex(template)
+    def _extract_features(self, input_tensor: torch.Tensor) -> torch.Tensor:
+        if self.use_cuda:
+            input_tensor = input_tensor.cuda()
+        return self.model(input_tensor)
+
+    def compute_confidence_map(self, template: torch.Tensor, image: torch.Tensor, image_name: str, alpha: float) -> torch.Tensor:
+        T_feat = self._extract_features(template)
         if self.I_feat_name != image_name:
-            self.I_feat = self.featex(image)
+            self.I_feat = self._extract_features(image)
             self.I_feat_name = image_name
 
         conf_maps = None
         batchsize_T = T_feat.size()[0]
         for i in range(batchsize_T):
             T_feat_i = T_feat[i].unsqueeze(0)
-            I_feat_norm, T_feat_i = MyNormLayer()(self.I_feat, T_feat_i)
-            # Hàm einsum tạo ma trận tương đồng (similarity) giữa từng điểm của ảnh sample và template.
+            I_feat_norm, T_feat_i = normalize_features(self.I_feat, T_feat_i)
             dist = torch.einsum(
                 'xcab,xcde->xabde',
                 I_feat_norm / torch.norm(I_feat_norm, dim=1, keepdim=True),
                 T_feat_i / torch.norm(T_feat_i, dim=1, keepdim=True),
             )
-            conf_map = MatchingScorer(self.alpha)(dist)
+            conf_map = compute_softmax_score(dist, alpha)
             if conf_maps is None:
                 conf_maps = conf_map
             else:
                 conf_maps = torch.cat([conf_maps, conf_map], dim=0)
         return conf_maps
 
+    def _run_one_sample(self, template: torch.Tensor, image: torch.Tensor, image_name: str, alpha: float) -> np.ndarray:
+        val = self.compute_confidence_map(template, image, image_name, alpha)
+        if val.is_cuda:
+            val = val.cpu()
+        val = val.numpy()
+        val = np.log(val)
 
-class MatchingScorer:
-    def __init__(self, alpha: float) -> None:
+        batch_size = val.shape[0]
+        scores = []
+        for i in range(batch_size):
+            gray = val[i, :, :, 0]
+            gray = cv2.resize(gray, (image.size()[-1], image.size()[-2]))
+            h = template.size()[-2]
+            w = template.size()[-1]
+            score = compute_score(gray, w, h)
+            score[score > -1e-7] = score.min()
+            score = np.exp(score / (h * w))
+            scores.append(score)
+        return np.array(scores)
+
+    def find(self, sample_image_path: str, templates_dir: str, alpha: float = 20, thresh: float = 0.2, conf_thresh: float = 0.07, template_scale: float = 1.0) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
         """
-        Khởi tạo lớp tính điểm tương đồng.
+        Thực hiện so khớp mẫu và trả về kết quả ảnh kèm JSON.
         
         Args:
-            alpha (float): Hệ số nhạy của Softmax.
-        """
-        self.alpha = alpha
-
-    def __call__(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Tính điểm số (confidence) bằng cách sử dụng softmax đa chiều.
-        
-        Args:
-            x (torch.Tensor): Tensor đầu vào biểu diễn độ tương quan cosine.
+            sample_image_path (str): Đường dẫn ảnh gốc.
+            templates_dir (str): Đường dẫn thư mục chứa các ảnh template.
+            alpha (float): Hệ số alpha điều chỉnh hàm softmax (temperature scaling).
+            thresh (float): Ngưỡng NMS tương đối.
+            conf_thresh (float): Ngưỡng loại bỏ tuyệt đối.
+            template_scale (float): Tỉ lệ thu phóng ảnh template.
             
         Returns:
-            torch.Tensor: Tensor điểm số cuối cùng.
+            Tuple[np.ndarray, List[Dict[str, Any]]]: Ảnh kết quả (BGR) và danh sách detections định dạng JSON.
         """
-        # Chuyển đổi sang mảng 2 chiều, sau đó tính confidence theo cả phía template và phía query.
-        batch_size, ref_row, ref_col, qry_row, qry_col = x.size()
-        x = x.view(batch_size, ref_row * ref_col, qry_row * qry_col)
-        xm_ref = x - torch.max(x, dim=1, keepdim=True)[0]
-        xm_qry = x - torch.max(x, dim=2, keepdim=True)[0]
-        confidence = torch.sqrt(
-            F.softmax(self.alpha * xm_ref, dim=1) * F.softmax(self.alpha * xm_qry, dim=2)
-        )
-        conf_values, _ = torch.topk(confidence, 1)
-        return conf_values.view(batch_size, ref_row, ref_col, 1)
-
-    def compute_output_shape(self, input_shape: Tuple) -> Tuple:
-        """
-        Hỗ trợ tính toán kích thước đầu ra mong muốn.
+        dataset = ImageDataset(templates_dir, sample_image_path, thresh=thresh, template_scale=template_scale)
         
-        Args:
-            input_shape (Tuple): Kích thước đầu vào.
+        scores = []
+        w_array = []
+        h_array = []
+        thresh_list = []
+        for data in dataset:
+            score = self._run_one_sample(data['template'], data['image'], data['image_name'], alpha)
+            scores.append(score)
+            w_array.append(data['template_w'])
+            h_array.append(data['template_h'])
+            thresh_list.append(data['thresh'])
             
-        Returns:
-            Tuple: Kích thước đầu ra theo format (batch_size, H, W, 1).
-        """
-        bs, H, W, _, _ = input_shape
-        return (bs, H, W, 1)
+        scores_arr = np.squeeze(np.array(scores), axis=1)
+        w_array_arr = np.array(w_array)
+        h_array_arr = np.array(h_array)
+        
+        boxes, indices, confidences = extract_bboxes_from_heatmap_multi(scores_arr, w_array_arr, h_array_arr, thresh_list)
+
+        # Lọc các bbox theo ngưỡng confidence tuyệt đối
+        filtered_boxes = []
+        filtered_indices = []
+        filtered_confidences = []
+        for i in range(len(boxes)):
+            conf = float(confidences[i]) if len(confidences) > i else 0.0
+            if conf >= conf_thresh:
+                filtered_boxes.append(boxes[i])
+                filtered_indices.append(indices[i])
+                filtered_confidences.append(confidences[i])
+                
+        boxes = np.array(filtered_boxes) if len(filtered_boxes) > 0 else np.empty((0, 2, 2))
+        indices = np.array(filtered_indices, dtype=int)
+        confidences = np.array(filtered_confidences)
+
+        # Chuẩn bị dữ liệu JSON
+        detections = []
+        for i in range(len(boxes)):
+            box = boxes[i]
+            x1, y1 = int(box[0][0]), int(box[0][1])
+            x2, y2 = int(box[1][0]), int(box[1][1])
+            tpl_idx_raw = int(indices[i]) if len(indices) > i else None
+            tpl_idx = tpl_idx_raw // len(dataset.angles) if tpl_idx_raw is not None else None
+            angle = dataset.angles[tpl_idx_raw % len(dataset.angles)] if tpl_idx_raw is not None else None
+            try:
+                tpl_name = f"{Path(dataset.template_paths[tpl_idx_raw]).name} (Angle: {angle}°)"
+            except Exception:
+                tpl_name = None
+            conf = float(confidences[i]) if len(confidences) > i else None
+            detections.append({
+                'bbox': [x1, y1, x2, y2],
+                'template_index': tpl_idx,
+                'angle': angle,
+                'template_name': tpl_name,
+                'confidence': conf,
+            })
+
+        base_indices = indices // len(dataset.angles) if len(indices) > 0 else np.array([], dtype=int)
+        result_bgr = plot_result_multi(dataset.image_raw, boxes, base_indices, show=False, confidences=confidences)
+        
+        return result_bgr, detections

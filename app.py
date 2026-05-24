@@ -8,12 +8,13 @@ from pathlib import Path
 
 import cv2
 import gradio as gr
+import numpy as np
 import torch
 
 from typing import Any, List, Tuple, Dict, Union
 
-from template_matcher import CreateModel
-from utils import ImageDataset, build_feature_extractor, nms_multi, plot_result_multi, run_multi_sample
+from template_matcher import TemplateMatcher
+from utils import build_feature_extractor
 
 
 def _resolve_file_path(file_item: Any) -> str:
@@ -109,51 +110,16 @@ def _run_matching(
             destination_path = templates_dir / f'template_{index}{source_path.suffix or ".png"}'
             shutil.copy2(source_path, destination_path)
 
-        dataset = ImageDataset(templates_dir, str(sample_path), thresh=thresh, template_scale=template_scale)
-        model = CreateModel(alpha=alpha, model=_build_backbone(model_name), use_cuda=use_cuda)
-        scores, w_array, h_array, thresh_list = run_multi_sample(model, dataset)
-        boxes, indices, confidences = nms_multi(scores, w_array, h_array, thresh_list)
+        matcher = TemplateMatcher(model=_build_backbone(model_name), use_cuda=use_cuda)
+        result_bgr, detections = matcher.find(
+            sample_image_path=str(sample_path),
+            templates_dir=str(templates_dir),
+            alpha=alpha,
+            thresh=thresh,
+            conf_thresh=conf_thresh,
+            template_scale=template_scale
+        )
 
-        # Lọc các bbox theo ngưỡng confidence tuyệt đối
-        filtered_boxes = []
-        filtered_indices = []
-        filtered_confidences = []
-        for i in range(len(boxes)):
-            conf = float(confidences[i]) if len(confidences) > i else 0.0
-            if conf >= conf_thresh:
-                filtered_boxes.append(boxes[i])
-                filtered_indices.append(indices[i])
-                filtered_confidences.append(confidences[i])
-                
-        boxes = np.array(filtered_boxes) if len(filtered_boxes) > 0 else np.empty((0, 2, 2))
-        indices = np.array(filtered_indices, dtype=int)
-        confidences = np.array(filtered_confidences)
-
-        # Chuẩn bị dữ liệu JSON: danh sách các box được phát hiện kèm độ tin cậy
-        detections = []
-        for i in range(len(boxes)):
-            box = boxes[i]
-            x1, y1 = int(box[0][0]), int(box[0][1])
-            x2, y2 = int(box[1][0]), int(box[1][1])
-            tpl_idx_raw = int(indices[i]) if len(indices) > i else None
-            tpl_idx = tpl_idx_raw // len(dataset.angles) if tpl_idx_raw is not None else None
-            angle = dataset.angles[tpl_idx_raw % len(dataset.angles)] if tpl_idx_raw is not None else None
-            tpl_name = None
-            try:
-                tpl_name = f"{Path(dataset.template_paths[tpl_idx_raw]).name} (Angle: {angle}°)"
-            except Exception:
-                tpl_name = None
-            conf = float(confidences[i]) if len(confidences) > i else None
-            detections.append({
-                'bbox': [x1, y1, x2, y2],
-                'template_index': tpl_idx,
-                'angle': angle,
-                'template_name': tpl_name,
-                'confidence': conf,
-            })
-
-        base_indices = indices // len(dataset.angles)
-        result_bgr = plot_result_multi(dataset.image_raw, boxes, base_indices, show=False, confidences=confidences)
         result_rgb = cv2.cvtColor(result_bgr, cv2.COLOR_BGR2RGB)
         return result_rgb, detections
 
@@ -194,8 +160,8 @@ def build_app() -> gr.Blocks:
                     examples=[
                         ["template/template_2_1.png"],
                         ["template/template_2_2.png"],
-                        ["template/template_2_3.png"],
-                        ["template/template_2_4.png"]
+                        ["template/template_2_4.png"],
+                        ["template/template_2_3.png"]
                     ],
                     inputs=dummy_image,
                     label="Các Template ví dụ (Nhấp vào ảnh để thêm vào danh sách)"
@@ -227,10 +193,10 @@ def build_app() -> gr.Blocks:
 
         with gr.Row():
             alpha = gr.Slider(minimum=1, maximum=100, value= 20, step= 0.5, label='Alpha', info='Hệ số điều chỉnh softmax (alpha càng lớn, kết quả matching càng "gắt" và loại bỏ noise tốt hơn nhưng dễ hụt object).')
-            thresh = gr.Slider(minimum=0.1, maximum=1.0, value=0.2, step=0.01, label='Threshold NMS', info='Ngưỡng NMS tương đối để giữ lại bbox cục bộ (Mặc định: 0.7).')
-            conf_thresh = gr.Slider(minimum=0.0, maximum=1.0, value=0.07, step=0.01, label='Confidence Threshold', info='Ngưỡng độ tin cậy tuyệt đối để lọc bbox sau cùng (Mặc định: 0.5).')
+            thresh = gr.Slider(minimum=0.1, maximum=1.0, value=0.2, step=0.01, label='Local Relative Threshold', info='Ngưỡng lọc đỉnh cục bộ (nhân với điểm max của template) để tìm ứng viên (Mặc định: 0.2).')
+            conf_thresh = gr.Slider(minimum=0.0, maximum=1.0, value=0.065, step=0.005, label='Confidence Threshold', info='Ngưỡng độ tin cậy tuyệt đối để lọc bbox sau cùng (Mặc định: 0.5).')
             template_scale = gr.Slider(minimum=0.1, maximum=3.0, value=1.0, step=0.1, label='Template Scale', info='Tỉ lệ thu phóng template. Giảm < 1.0 nếu template to hơn thực tế, tăng > 1.0 nếu nhỏ hơn.')
-            model_name = gr.Dropdown(choices=['convnext_tiny', 'efficientnet_b4', 'mobilenet_v3'], value='convnext_tiny', label='Backbone Model', info='Chọn mô hình trích xuất đặc trưng.')
+            model_name = gr.Dropdown(choices=['convnext_tiny', 'efficientnet_b4', 'mobilenet_v3'], value='efficientnet_b4', label='Backbone Model', info='Chọn mô hình trích xuất đặc trưng.')
 
         run_button = gr.Button('Run Template Matching')
         output_image = gr.Image(label='BBox result')
