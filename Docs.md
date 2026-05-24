@@ -55,7 +55,7 @@ Thực chất bước này hoạt động phức tạp và khác biệt so với
 3. **Chuyển đổi thành Bounding Box & Sắp xếp:** 
    - *Đồng bộ không gian:* Trước đó, Score Map (vốn bị thu nhỏ ở tầng Feature Map) đã được phóng to (upscale) về đúng kích thước pixel của ảnh gốc. 
    - *Xác định tọa độ:* Mỗi pixel (đỉnh cục bộ) thỏa mãn điều kiện ở bước 2 mang ý nghĩa là **tọa độ tâm** của đối tượng trên ảnh thật.
-   - *Nội suy Bounding Box:* Từ tọa độ tâm `(x_center, y_center)`, hệ thống bù trừ dựa trên chiều rộng (W) và chiều cao (H) thực tế của template tương ứng để tính ra tọa độ góc hộp (ví dụ: `x1 = x_center - W/2`, `y1 = y_center - H/2`).
+   - *Nội suy Bounding Box:* Từ tọa độ tâm `(x_center, y_center)`, hệ thống bù trừ dựa trên chiều rộng (W) và chiều cao (H) thực tế của template tương ứng để tính ra tọa độ góc hộp (ví dụ: `x1 = x_center - W/2`, `y1 = y_center - H/2`). Phần này ý nghĩa tương tự như anchor free trong Object Detection, chỉ khác mỗi chỗ là các kích thước sẽ được hồi quy nhưng ở đây ta đi nội suy từ kích thước template gốc ra do cần thời gian inference nhanh và đề bài là zero-shot. Tuy nhiên nếu phần cứng đủ mạnh ta có thể nội suy theo từng tỉ lệ cạnh khác nhau sau đó crop ảnh ra và so với template gốc để tìm ra kích thước box cho độ tương đồng cao nhất.
    - Toàn bộ box ứng viên sau đó được gộp chung lại và sắp xếp theo điểm số tự tin từ cao xuống thấp.
 4. **Xóa bỏ chồng chéo nghiêm ngặt:** 
    - Box có điểm cao nhất luôn được giữ lại.
