@@ -24,8 +24,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('-t', '--template_images_dir', default='template/')
     parser.add_argument('-ss', '--sample_images_dir')
     parser.add_argument('-r', '--result_images_dir', default='result/')
-    parser.add_argument('--alpha', type=float, default=20)
-    parser.add_argument('--thresh', type=float, default=0.2)
+    parser.add_argument('--alpha', type=float, default=20, help='Hệ số điều chỉnh softmax (Mặc định: 20)')
+    parser.add_argument('--thresh', type=float, default=0.2, help='Ngưỡng lọc đỉnh cục bộ để tìm ứng viên (Mặc định: 0.2)')
+    parser.add_argument('--conf_thresh', type=float, default=0.065, help='Ngưỡng độ tin cậy tuyệt đối để lọc bbox (Mặc định: 0.065)')
+    parser.add_argument('--template_scale', type=float, default=1.0, help='Tỉ lệ thu phóng ảnh template (Mặc định: 1.0)')
     parser.add_argument('--model', type=str, default='convnext_tiny', choices=['convnext_tiny', 'efficientnet_b4', 'mobilenet_v3'], help='Backbone model trích xuất đặc trưng')
     return parser.parse_args()
 
@@ -63,6 +65,8 @@ def main() -> None:
             templates_dir=template_dir,
             alpha=args.alpha,
             thresh=args.thresh,
+            conf_thresh=args.conf_thresh,
+            template_scale=args.template_scale
         )
         cv2.imwrite('result.png', result_bgr)
         print('Đã lưu file result.png')
@@ -81,6 +85,8 @@ def main() -> None:
             templates_dir=template_dir,
             alpha=args.alpha,
             thresh=args.thresh,
+            conf_thresh=args.conf_thresh,
+            template_scale=args.template_scale
         )
         save_path = os.path.join(result_path, image_name) + '.png'
         cv2.imwrite(save_path, result_bgr)

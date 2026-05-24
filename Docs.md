@@ -16,13 +16,13 @@ graph TD
     B --> E[Trích xuất Đặc trưng CNN]
     D --> E
     E --> F[Feature Map Ảnh gốc]
-    E --> G[Feature Map 8 Ảnh mẫu]
+    E --> G[Feature Map sinh 8 ảnh mẫu]
     F --> H(Chuẩn hóa L2 & Cosine Similarity)
     G --> H
     H --> I(Softmax 2 chiều với hệ số Alpha)
-    I --> J[Bản đồ Điểm số - Score Map]
+    I --> J[Score Map]
     J --> K(Tìm đỉnh cục bộ & Nội suy Bounding Box)
-    K --> L(Xóa bỏ chồng chéo - Strict NMS)
+    K --> L(Xóa bỏ chồng chéo - NMS)
     L --> M(Lọc theo ngưỡng tự tin)
     M --> N[Kết quả cuối cùng]
 ```
@@ -90,3 +90,9 @@ Thực chất bước này hoạt động phức tạp và khác biệt so với
 - **Test Case 3: Đối tượng bị thay đổi tỉ lệ lớn (Scale 1.5x hoặc 0.5x).**
   - **Độ chính xác:** Chỉ khớp các hình thù quá nổi bật, còn lại thất bại.
 
+## 7. Ảnh Demo Kết quả
+Dưới đây là một số kết quả nhận diện từ hệ thống:
+
+![Demo Image 1](https://raw.githubusercontent.com/vietanhlee/Template_Matching_Deep_Learining/refs/heads/main/access/image1.jpg)
+
+![Demo Image 2](https://raw.githubusercontent.com/vietanhlee/Template_Matching_Deep_Learining/refs/heads/main/access/image2.jpg)
