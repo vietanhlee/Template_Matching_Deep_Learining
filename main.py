@@ -1,100 +1,112 @@
-from pathlib import Path
-from glob import glob
 import argparse
-import gc
 import os
+from typing import List
 
 import cv2
-import torch
 
-from template_matcher import TemplateMatcher
-from utils import build_feature_extractor
+from models import ModelManager
+from template_matcher import MATCH_METHODS, TemplateMatcher
+from utils import bgr_to_rgb, color_from_name, draw_results, list_images, load_image_bgr, to_json
 
 
 def parse_args() -> argparse.Namespace:
-    """
-    Phân tích các đối số dòng lệnh.
-    
-    Returns:
-        argparse.Namespace: Đối tượng chứa các tham số được truyền vào từ dòng lệnh.
-    """
-    parser = argparse.ArgumentParser(description='CNN Template Matching Implementation')
-    parser.add_argument('--cuda', action='store_true')
-    parser.add_argument('-s', '--sample_image', default='sample/sample1.jpg')
-    parser.add_argument('-t', '--template_images_dir', default='template/')
-    parser.add_argument('-ss', '--sample_images_dir')
-    parser.add_argument('-r', '--result_images_dir', default='result/')
-    parser.add_argument('--alpha', type=float, default=20, help='Hệ số điều chỉnh softmax (Mặc định: 20)')
-    parser.add_argument('--thresh', type=float, default=0.2, help='Ngưỡng lọc đỉnh cục bộ để tìm ứng viên (Mặc định: 0.2)')
-    parser.add_argument('--conf_thresh', type=float, default=0.065, help='Ngưỡng độ tin cậy tuyệt đối để lọc bbox (Mặc định: 0.065)')
-    parser.add_argument('--template_scale', type=float, default=1.0, help='Tỉ lệ thu phóng ảnh template (Mặc định: 1.0)')
-    parser.add_argument('--model', type=str, default='convnext_tiny', choices=['convnext_tiny', 'efficientnet_b4', 'mobilenet_v3'], help='Backbone model trích xuất đặc trưng')
+    """Phân tích tham số dòng lệnh cho CLI."""
+    parser = argparse.ArgumentParser(description="Template matching CLI")
+    parser.add_argument("--image", required=True, help="Đường dẫn ảnh đầu vào")
+    parser.add_argument("--templates", nargs="*", default=[], help="Danh sách đường dẫn template")
+    parser.add_argument("--template-dir", default="template", help="Thư mục chứa template")
+    parser.add_argument("--output-image", default="output.png", help="Đường dẫn ảnh kết quả")
+    parser.add_argument("--output-json", default="output.json", help="Đường dẫn JSON kết quả")
+    parser.add_argument("--match-threshold", type=float, default=0.7)
+    parser.add_argument("--cosine-threshold", type=float, default=0.75)
+    parser.add_argument("--iou-threshold", type=float, default=0.3)
+    parser.add_argument(
+        "--match-method",
+        default="TM_CCOEFF_NORMED",
+        choices=sorted(MATCH_METHODS.keys()),
+        help="Phương pháp matchTemplate",
+    )
+    parser.add_argument(
+        "--angles",
+        default="0,45,90,135,180,225,270,315",
+        help="Danh sách góc xoay, cách nhau bởi dấu phẩy",
+    )
+    parser.add_argument("--scale-min", type=float, default=0.1)
+    parser.add_argument("--scale-max", type=float, default=2.0)
+    parser.add_argument("--scale-steps", type=int, default=10)
+    parser.add_argument("--model", default="convnext_tiny")
+    parser.add_argument("--max-detections", type=int, default=50, help="Giới hạn bbox mỗi template")
+    parser.add_argument("--no-mt", action="store_true", help="Tắt đa luồng")
+    parser.add_argument("--no-cnn", action="store_true", help="Tắt xác nhận bằng CNN")
     return parser.parse_args()
 
 
+def collect_templates(paths: List[str], template_dir: str) -> List[str]:
+    """Gộp danh sách template từ đường dẫn chỉ định và thư mục."""
+    templates = list(paths)
+    if template_dir and os.path.isdir(template_dir):
+        templates.extend(list_images(template_dir))
+    unique = []
+    seen = set()
+    for p in templates:
+        if p not in seen:
+            seen.add(p)
+            unique.append(p)
+    return unique
+
+
 def main() -> None:
-    """
-    Hàm chính điều khiển luồng thực thi của ứng dụng.
-    Xử lý theo chế độ một ảnh (single image) hoặc xử lý hàng loạt (batch).
-    """
+    """Chạy pipeline template matching qua CLI."""
     args = parse_args()
+    image_bgr = load_image_bgr(args.image)
+    template_paths = collect_templates(args.templates, args.template_dir)
+    if not template_paths:
+        raise SystemExit("Không có template nào được cung cấp")
 
-    # Các đường dẫn đầu vào/ra được tách riêng để dễ chỉnh sửa khi chạy lệnh.
-    template_dir = args.template_images_dir
-    result_path = args.result_images_dir
-    os.makedirs(result_path, exist_ok=True)
+    templates = {os.path.basename(p): load_image_bgr(p) for p in template_paths}
 
-    # Nếu user yêu cầu sử dụng CUDA nhưng máy không có GPU, tự động chuyển về dùng CPU.
-    use_cuda = args.cuda and torch.cuda.is_available()
-    if args.cuda and not use_cuda:
-        print('CUDA was requested but is not available. Falling back to CPU.')
-
-    print(f'Đang định nghĩa mô hình (define model: {args.model})...')
+    angles = [float(x.strip()) for x in args.angles.split(",") if x.strip()]
     matcher = TemplateMatcher(
-        model=build_feature_extractor(model_name=args.model, pretrained=True),
-        use_cuda=use_cuda,
+        match_threshold=args.match_threshold,
+        iou_threshold=args.iou_threshold,
+        match_method=args.match_method,
+        angles=angles,
+        scale_min=args.scale_min,
+        scale_max=args.scale_max,
+        scale_steps=args.scale_steps,
+        max_detections_per_template=args.max_detections,
+        use_multithreading=not args.no_mt,
     )
 
-    if not args.sample_images_dir:
-        # Chế độ xử lý 1 ảnh: so khớp tất cả template trong thư mục template/ với 1 ảnh sample.
-        print('Chế độ 1 ảnh (One Sample Image Is Inputted)')
-        image_path = args.sample_image
-        print('Đang thực hiện template matching...')
-        result_bgr, _ = matcher.find(
-            sample_image_path=image_path,
-            templates_dir=template_dir,
-            alpha=args.alpha,
-            thresh=args.thresh,
-            conf_thresh=args.conf_thresh,
-            template_scale=args.template_scale
-        )
-        cv2.imwrite('result.png', result_bgr)
-        print('Đã lưu file result.png')
-        return
+    results = matcher.find(image_bgr, templates)
 
-    # Chế độ xử lý theo lô (batch): xử lý lần lượt từng ảnh trong thư mục sample_images_dir.
-    print('Chế độ nhiều ảnh (Image Directory Is Inputted)')
-    sample_images_dir = args.sample_images_dir
-    images = glob(os.path.join(sample_images_dir, '*'))
-    for index, image in enumerate(images, start=1):
-        print('-----', index, '/', len(images), '-----')
-        image_name = Path(image).stem
-        print(f'Ảnh Sample: {image_name} đang được xử lý (Processing)...')
-        result_bgr, _ = matcher.find(
-            sample_image_path=image,
-            templates_dir=template_dir,
-            alpha=args.alpha,
-            thresh=args.thresh,
-            conf_thresh=args.conf_thresh,
-            template_scale=args.template_scale
-        )
-        save_path = os.path.join(result_path, image_name) + '.png'
-        cv2.imwrite(save_path, result_bgr)
-        print('Đã lưu ảnh kết quả (result image was saved)')
-        gc.collect()
-        if use_cuda:
-            torch.cuda.empty_cache()
+    if not args.no_cnn:
+        model_manager = ModelManager()
+        filtered = []
+        for r in results:
+            x, y, w, h = r.bbox
+            crop = image_bgr[y : y + h, x : x + w]
+            if crop.size == 0:
+                continue
+            template_resized = cv2.resize(r.template_variant, (w, h))
+            crop_rgb = bgr_to_rgb(crop)
+            template_rgb = bgr_to_rgb(template_resized)
+            emb_a = model_manager.embed(args.model, crop_rgb)
+            emb_b = model_manager.embed(args.model, template_rgb)
+            sim = model_manager.cosine_similarity(emb_a, emb_b)
+            r.cosine_similarity = sim
+            if sim >= args.cosine_threshold:
+                filtered.append(r)
+        results = filtered
+
+    json_items = [r.to_dict() for r in results]
+    color_map = {name: color_from_name(name) for name in templates.keys()}
+    output_image = draw_results(image_bgr, json_items, color_map)
+
+    cv2.imwrite(args.output_image, output_image)
+    with open(args.output_json, "w", encoding="utf-8") as f:
+        f.write(to_json(json_items))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
