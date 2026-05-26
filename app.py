@@ -1,5 +1,5 @@
 import os
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import cv2
 import gradio as gr
@@ -15,7 +15,6 @@ from utils import (
     list_images,
     load_image_bgr,
     rgb_to_bgr,
-    to_json,
 )
 
 
@@ -28,11 +27,20 @@ DEFAULT_MODEL = "efficientnet_b4"
 
 
 model_manager = ModelManager()
+# Preload model mặc định để tránh độ trễ tải model khi lần chạy đầu tiên
+# (việc tải model timm có thể mất thời gian, nên gọi sẵn khi khởi tạo app).
 model_manager.get(DEFAULT_MODEL)
 
 
 def _filelist_to_paths(files) -> List[str]:
-    """Chuyển danh sách file upload từ Gradio sang danh sách đường dẫn."""
+    """Chuyển danh sách file upload từ Gradio sang danh sách đường dẫn.
+
+    Args:
+        files: Danh sách file Gradio (chuỗi đường dẫn hoặc đối tượng có thuộc tính `name`).
+
+    Returns:
+        Danh sách đường dẫn hợp lệ.
+    """
     if not files:
         return []
     paths = []
@@ -45,7 +53,15 @@ def _filelist_to_paths(files) -> List[str]:
 
 
 def _load_templates(selected_paths: List[str], uploads) -> Dict[str, np.ndarray]:
-    """Nạp template từ danh sách đã chọn và file upload."""
+    """Nạp template từ danh sách đã chọn và file upload.
+
+    Args:
+        selected_paths: Danh sách đường dẫn template đã chọn.
+        uploads: Danh sách file upload từ Gradio.
+
+    Returns:
+        Từ điển {tên_template: ảnh_bgr}.
+    """
     paths = list(selected_paths or [])
     paths.extend(_filelist_to_paths(uploads))
     templates = {}
@@ -73,7 +89,30 @@ def run_matching(
     use_cnn: bool,
     model_name: str,
 ):
-    """Chạy template matching và (tùy chọn) xác nhận bằng CNN."""
+    """Chạy template matching và (tuy chon) xac nhan bang CNN.
+
+    Args:
+        image_rgb: Ảnh đầu vào dạng RGB (numpy array).
+        template_selected_paths: Đường dẫn template được chọn từ gallery.
+        template_uploads: Danh sách file template upload.
+        match_threshold: Ngưỡng điểm `matchTemplate`.
+        cosine_threshold: Ngưỡng cosine khi xác nhận bằng CNN.
+        iou_threshold: Ngưỡng IoU cho NMS.
+        match_method: Tên phương pháp `matchTemplate`.
+        scale_min: Tỉ lệ scale nhỏ nhất.
+        scale_max: Tỉ lệ scale lớn nhất.
+        scale_steps: Số bước scale.
+        max_detections: Giới hạn số bbox mỗi template.
+        use_multithreading: Bật/tắt đa luồng khi match.
+        use_cnn: Bật/tắt xác nhận bằng CNN.
+        model_name: Tên model timm để lấy embedding.
+
+    Returns:
+        2-tuple: (ảnh kết quả dạng RGB, danh sách kết quả dạng dict).
+
+    Raises:
+        gr.Error: Khi thiếu ảnh đầu vào hoặc template.
+    """
     if image_rgb is None:
         raise gr.Error("Vui lòng chọn hoặc upload ảnh cần so sánh")
 
@@ -102,6 +141,8 @@ def run_matching(
             crop = image_bgr[y : y + h, x : x + w]
             if crop.size == 0:
                 continue
+            # Lọc bỏ các crop gần như trắng (không có nội dung hữu ích)
+            # để tránh false positive do nền trắng hoặc vùng rỗng.
             if is_mostly_white(crop):
                 continue
             filtered_blank.append(r)
@@ -115,6 +156,8 @@ def run_matching(
             crop = image_bgr[y : y + h, x : x + w]
             if crop.size == 0:
                 continue
+            # Trước khi xác nhận bằng CNN, loại bỏ các vùng trắng và
+            # chuẩn hóa kích thước template_variant về đúng kích thước bbox.
             if is_mostly_white(crop):
                 continue
             template_resized = cv2.resize(r.template_variant, (w, h))
@@ -141,6 +184,15 @@ template_choices = [(os.path.basename(p), p) for p in template_files]
 
 
 def _toggle_template_selection(evt: gr.SelectData, selected: List[str]) -> List[str]:
+    """Bật/tắt lựa chọn template theo thao tác click trong gallery.
+
+    Args:
+        evt: Sự kiện chọn từ gallery (gr.SelectData).
+        selected: Danh sách đường dẫn đang được chọn.
+
+    Returns:
+        Danh sách đường dẫn sau khi cập nhật.
+    """
     if evt is None or evt.index is None:
         return selected
     idx = int(evt.index)
@@ -155,6 +207,11 @@ def _toggle_template_selection(evt: gr.SelectData, selected: List[str]) -> List[
 
 
 def _clear_template_selection() -> List[str]:
+    """Xóa toàn bộ lựa chọn template hiện tại.
+
+    Returns:
+        Danh sách rỗng.
+    """
     return []
 
 CUSTOM_CSS = """
