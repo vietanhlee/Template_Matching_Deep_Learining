@@ -10,7 +10,15 @@ BBox = Tuple[int, int, int, int]
 
 
 def list_images(folder: str, extensions: Optional[Sequence[str]] = None) -> List[str]:
-    """Liệt kê các ảnh trong thư mục theo phần mở rộng cho trước."""
+    """Liệt kê các ảnh trong thư mục theo phần mở rộng cho trước.
+
+    Args:
+        folder: Thư mục cần duyệt.
+        extensions: Danh sách phần mở rộng hợp lệ.
+
+    Returns:
+        Danh sách đường dẫn ảnh.
+    """
     if extensions is None:
         extensions = [".jpg", ".jpeg", ".png", ".bmp", ".webp"]
     paths: List[str] = []
@@ -24,7 +32,17 @@ def list_images(folder: str, extensions: Optional[Sequence[str]] = None) -> List
 
 
 def load_image_bgr(path: str) -> np.ndarray:
-    """Đọc ảnh bằng OpenCV và trả về ảnh dạng BGR."""
+    """Đọc ảnh bằng OpenCV và trả về ảnh dạng BGR.
+
+    Args:
+        path: Đường dẫn file ảnh.
+
+    Returns:
+        Ảnh BGR dạng numpy array.
+
+    Raises:
+        ValueError: Khi không đọc được ảnh.
+    """
     image = cv2.imread(path, cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError(f"Không đọc được ảnh: {path}")
@@ -32,17 +50,39 @@ def load_image_bgr(path: str) -> np.ndarray:
 
 
 def bgr_to_rgb(image_bgr: np.ndarray) -> np.ndarray:
-    """Chuyển ảnh từ BGR sang RGB."""
+    """Chuyển ảnh từ BGR sang RGB.
+
+    Args:
+        image_bgr: Ảnh đầu vào dạng BGR.
+
+    Returns:
+        Ảnh RGB dạng numpy array.
+    """
     return cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
 
 
 def rgb_to_bgr(image_rgb: np.ndarray) -> np.ndarray:
-    """Chuyển ảnh từ RGB sang BGR."""
+    """Chuyển ảnh từ RGB sang BGR.
+
+    Args:
+        image_rgb: Ảnh đầu vào dạng RGB.
+
+    Returns:
+        Ảnh BGR dạng numpy array.
+    """
     return cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
 
 
 def rotate_image(image: np.ndarray, angle: float) -> np.ndarray:
-    """Xoay ảnh theo góc bất kỳ và giữ nguyên toàn bộ nội dung."""
+    """Xoay ảnh theo góc bất kỳ và giữ nguyên toàn bộ nội dung.
+
+    Args:
+        image: Ảnh đầu vào.
+        angle: Góc xoay (độ).
+
+    Returns:
+        Ảnh đã xoay.
+    """
     if angle % 360 == 0:
         return image
     (h, w) = image.shape[:2]
@@ -62,7 +102,18 @@ def trim_white_border(
     threshold: int = 245,
     min_size: int = 5,
 ) -> np.ndarray:
-    """Cắt viền trắng dư thừa của template trước khi xử lý."""
+    """Cắt viền trắng dư thừa của template trước khi xử lý.
+
+    Args:
+        image_bgr: Template dạng BGR.
+        threshold: Ngưỡng để phát hiện vùng trắng.
+        min_size: Kích thước nhỏ nhất để chấp nhận cắt.
+
+    Returns:
+        Template đã cắt viền (nếu hợp lệ), hoặc ảnh gốc nếu không cắt.
+    """
+    # Chuyển về xám và tạo mask cho pixel "không trắng" (foreground)
+    # Pixel có giá trị < threshold được coi là foreground.
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
     mask = gray < threshold
     if not np.any(mask):
@@ -83,9 +134,22 @@ def compute_scale_candidates(
     max_scale: float,
     steps: int,
 ) -> List[float]:
-    """Tính danh sách tỉ lệ scale sao cho template vẫn nằm trong ảnh."""
+    """Tính danh sách tỉ lệ scale sao cho template vẫn nằm trong ảnh.
+
+    Args:
+        image_shape: Shape của ảnh đầu vào.
+        template_shape: Shape của template.
+        min_scale: Tỉ lệ nhỏ nhất.
+        max_scale: Tỉ lệ lớn nhất.
+        steps: Số bước scale.
+
+    Returns:
+        Danh sách tỉ lệ scale hợp lệ.
+    """
     image_h, image_w = image_shape[:2]
     template_h, template_w = template_shape[:2]
+    # Giới hạn tối đa của scale sao cho template không vượt quá kích thước ảnh.
+    # max_allowed = min(width_ratio, height_ratio)
     max_allowed = min(image_w / template_w, image_h / template_h)
     if max_allowed <= 0:
         return []
@@ -100,7 +164,15 @@ def compute_scale_candidates(
 
 
 def resize_template(template: np.ndarray, scale: float) -> np.ndarray:
-    """Resize template theo tỉ lệ scale."""
+    """Resize template theo tỉ lệ scale.
+
+    Args:
+        template: Template đầu vào.
+        scale: Tỉ lệ scale.
+
+    Returns:
+        Template đã resize.
+    """
     h, w = template.shape[:2]
     new_w = max(int(w * scale), 1)
     new_h = max(int(h * scale), 1)
@@ -108,7 +180,16 @@ def resize_template(template: np.ndarray, scale: float) -> np.ndarray:
 
 
 def nms_boxes(boxes: List[BBox], scores: List[float], iou_threshold: float) -> List[int]:
-    """Áp dụng NMS và trả về chỉ số bbox được giữ lại."""
+    """Áp dụng NMS và trả về chỉ số bbox được giữ lại.
+
+    Args:
+        boxes: Danh sách bbox (x, y, w, h).
+        scores: Điểm tin cậy tương ứng.
+        iou_threshold: Ngưỡng IoU để loại trùng.
+
+    Returns:
+        Danh sách chỉ số bbox được giữ lại.
+    """
     if not boxes:
         return []
     x1 = np.array([b[0] for b in boxes], dtype=np.float32)
@@ -117,6 +198,7 @@ def nms_boxes(boxes: List[BBox], scores: List[float], iou_threshold: float) -> L
     y2 = np.array([b[1] + b[3] for b in boxes], dtype=np.float32)
     scores_np = np.array(scores, dtype=np.float32)
 
+    # Diện tích mỗi bbox (dùng +1 để phù hợp quy ước pixel inclusive)
     areas = (x2 - x1 + 1) * (y2 - y1 + 1)
     order = scores_np.argsort()[::-1]
 
@@ -124,6 +206,7 @@ def nms_boxes(boxes: List[BBox], scores: List[float], iou_threshold: float) -> L
     while order.size > 0:
         i = int(order[0])
         keep.append(i)
+        # Tính giao diện giữa bbox i và phần còn lại (vectorized)
         xx1 = np.maximum(x1[i], x1[order[1:]])
         yy1 = np.maximum(y1[i], y1[order[1:]])
         xx2 = np.minimum(x2[i], x2[order[1:]])
@@ -132,6 +215,7 @@ def nms_boxes(boxes: List[BBox], scores: List[float], iou_threshold: float) -> L
         w = np.maximum(0.0, xx2 - xx1 + 1)
         h = np.maximum(0.0, yy2 - yy1 + 1)
         inter = w * h
+        # IoU = inter / (area1 + area2 - inter)
         iou = inter / (areas[i] + areas[order[1:]] - inter + 1e-6)
 
         remaining = np.where(iou <= iou_threshold)[0]
@@ -140,7 +224,14 @@ def nms_boxes(boxes: List[BBox], scores: List[float], iou_threshold: float) -> L
 
 
 def color_from_name(name: str) -> Tuple[int, int, int]:
-    """Sinh màu ổn định dựa trên tên template."""
+    """Sinh màu ổn định dựa trên tên template.
+
+    Args:
+        name: Tên template.
+
+    Returns:
+        Màu BGR `(b, g, r)`.
+    """
     seed = abs(hash(name)) % 255
     r = (seed * 97) % 255
     g = (seed * 57) % 255
@@ -153,7 +244,16 @@ def draw_results(
     results: Iterable[Dict],
     template_colors: Dict[str, Tuple[int, int, int]],
 ) -> np.ndarray:
-    """Vẽ bbox và điểm cosine similarity (nếu có) lên ảnh."""
+    """Vẽ bbox và điểm cosine similarity (nếu có) lên ảnh.
+
+    Args:
+        image_bgr: Ảnh gốc dạng BGR.
+        results: Danh sách kết quả dạng dict.
+        template_colors: Từ điển màu theo tên template.
+
+    Returns:
+        Ảnh BGR đã vẽ kết quả.
+    """
     output = image_bgr.copy()
     for item in results:
         x, y, w, h = item["bbox"]
@@ -183,12 +283,28 @@ def draw_results(
 
 
 def to_json(data: List[Dict]) -> str:
-    """Chuyển danh sách kết quả sang chuỗi JSON."""
+    """Chuyển danh sách kết quả sang chuỗi JSON.
+
+    Args:
+        data: Danh sách dict kết quả.
+
+    Returns:
+        Chuỗi JSON đã định dạng (UTF-8, không escape unicode).
+    """
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
 def is_mostly_white(image_bgr: np.ndarray, threshold: int = 100, min_foreground_ratio: float = 0.01) -> bool:
-    """Kiem tra vung anh co qua it net ve (gan nhu toan trang)."""
+    """Kiểm tra vùng ảnh có quá ít nét vẽ (gần như toàn trắng).
+
+    Args:
+        image_bgr: Ảnh đầu vào dạng BGR.
+        threshold: Ngưỡng để tách foreground (pixel < threshold được xem là foreground).
+        min_foreground_ratio: Tỷ lệ foreground tối thiểu để coi là có nội dung.
+
+    Returns:
+        `True` nếu vùng ảnh gần như toàn trắng (foreground ratio < min_foreground_ratio).
+    """
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
     foreground = gray < threshold
     ratio = float(foreground.mean())

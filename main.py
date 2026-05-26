@@ -10,7 +10,11 @@ from utils import bgr_to_rgb, color_from_name, draw_results, list_images, load_i
 
 
 def parse_args() -> argparse.Namespace:
-    """Phân tích tham số dòng lệnh cho CLI."""
+    """Phân tích tham số dòng lệnh cho CLI.
+
+    Returns:
+        Namespace chứa các tham số đã parse.
+    """
     parser = argparse.ArgumentParser(description="Template matching CLI")
     parser.add_argument("--image", required=True, help="Đường dẫn ảnh đầu vào")
     parser.add_argument("--templates", nargs="*", default=[], help="Danh sách đường dẫn template")
@@ -42,9 +46,19 @@ def parse_args() -> argparse.Namespace:
 
 
 def collect_templates(paths: List[str], template_dir: str) -> List[str]:
-    """Gộp danh sách template từ đường dẫn chỉ định và thư mục."""
+    """Gộp danh sách template từ đường dẫn chỉ định và thư mục.
+
+    Args:
+        paths: Danh sách đường dẫn template được truyền trực tiếp.
+        template_dir: Thư mục chứa template bổ sung.
+
+    Returns:
+        Danh sách đường dẫn duy nhất (đã loại trùng).
+    """
     templates = list(paths)
     if template_dir and os.path.isdir(template_dir):
+        # Nếu cung cấp `template_dir`, thêm các file trong thư mục vào danh sách.
+        # Thao tác tách riêng để cho phép kết hợp template truyền tay và trong thư mục.
         templates.extend(list_images(template_dir))
     unique = []
     seen = set()
@@ -56,8 +70,13 @@ def collect_templates(paths: List[str], template_dir: str) -> List[str]:
 
 
 def main() -> None:
-    """Chạy pipeline template matching qua CLI."""
+    """Chạy pipeline template matching qua CLI.
+
+    Raises:
+        SystemExit: Khi không có template nào được cung cấp.
+    """
     args = parse_args()
+
     image_bgr = load_image_bgr(args.image)
     template_paths = collect_templates(args.templates, args.template_dir)
     if not template_paths:

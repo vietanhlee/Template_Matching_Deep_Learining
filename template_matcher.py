@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -35,7 +35,11 @@ class MatchResult:
     cosine_similarity: Optional[float] = None
 
     def to_dict(self) -> Dict:
-        """Chuyển kết quả sang dict để xuất JSON."""
+        """Chuyển kết quả sang dict để xuất JSON.
+
+        Returns:
+            Dict không chứa trường `template_variant`.
+        """
         data = asdict(self)
         data.pop("template_variant", None)
         return data
@@ -56,7 +60,23 @@ class TemplateMatcher:
         use_multithreading: bool = True,
         use_gray: bool = True,
     ) -> None:
-        """Khởi tạo matcher với các ngưỡng và cấu hình tìm kiếm."""
+        """Khởi tạo matcher với các ngưỡng và cấu hình tìm kiếm.
+
+        Args:
+            match_threshold: Ngưỡng điểm `matchTemplate`.
+            iou_threshold: Ngưỡng IoU cho NMS.
+            match_method: Tên phương pháp `matchTemplate`.
+            angles: Danh sách góc xoay (độ).
+            scale_min: Tỉ lệ scale nhỏ nhất.
+            scale_max: Tỉ lệ scale lớn nhất.
+            scale_steps: Số bước scale.
+            max_detections_per_template: Giới hạn bbox mỗi template.
+            use_multithreading: Bật/tắt đa luồng.
+            use_gray: Sử dụng ảnh xám khi match.
+
+        Raises:
+            ValueError: Khi `match_method` không hỗ trợ.
+        """
         if match_method not in MATCH_METHODS:
             raise ValueError(f"Phương pháp matching không hỗ trợ: {match_method}")
         self.match_threshold = match_threshold
@@ -77,7 +97,16 @@ class TemplateMatcher:
         template_bgr: np.ndarray,
         template_name: str,
     ) -> List[MatchResult]:
-        """Khớp một template đơn lẻ với ảnh đầu vào."""
+        """Khớp một template đơn lẻ với ảnh đầu vào.
+
+        Args:
+            image_bgr: Ảnh đầu vào dạng BGR.
+            template_bgr: Template dạng BGR.
+            template_name: Tên template.
+
+        Returns:
+            Danh sách kết quả match đã qua NMS.
+        """
         image_h, image_w = image_bgr.shape[:2]
         image_match = (
             cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY) if self.use_gray else image_bgr
@@ -87,10 +116,17 @@ class TemplateMatcher:
         min_image_dim = float(min(image_h, image_w))
         min_template_dim = float(min(t_h, t_w))
         if min_template_dim > 0 and min_image_dim > 0:
+            # Chuẩn hóa kích thước template trước khi sinh các scale:
+            # base_scale được tính sao cho kích thước nhỏ nhất của template
+            # chiếm khoảng 10% (0.1) của cạnh nhỏ nhất ảnh đầu vào. Mục đích
+            # là đưa template về phạm vi thiết thực, tránh phải thử các scale
+            # quá nhỏ hoặc quá lớn không cần thiết.
             base_scale = (0.1 * min_image_dim) / min_template_dim
             template_bgr = resize_template(template_bgr, base_scale)
         results: List[MatchResult] = []
         for angle in self.angles:
+            # Với mỗi góc xoay: xoay template rồi tính các ứng viên scale
+            # sao cho template vẫn nằm trong ảnh (hạn chế scale gây tràn).
             rotated = rotate_image(template_bgr, angle)
             scales = compute_scale_candidates(
                 image_bgr.shape, rotated.shape, self.scale_min, self.scale_max, self.scale_steps
@@ -98,6 +134,8 @@ class TemplateMatcher:
             for scale in scales:
                 scaled = resize_template(rotated, scale)
                 t_h, t_w = scaled.shape[:2]
+                # Bỏ qua các biến thể template quá nhỏ (độ tin cậy thấp)
+                # hoặc lớn hơn ảnh (không thể so khớp).
                 if t_h < 5 or t_w < 5:
                     continue
                 if t_h > image_h or t_w > image_w:
@@ -105,10 +143,15 @@ class TemplateMatcher:
                 template_match = (
                     cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY) if self.use_gray else scaled
                 )
+                # matchTemplate trả về một bản đồ điểm (match_map) thể hiện
+                # độ tương đồng tại từng vị trí. Lấy các vị trí có điểm >=
+                # threshold làm ứng viên.
                 match_map = cv2.matchTemplate(image_match, template_match, self.match_method)
                 loc = np.where(match_map >= self.match_threshold)
                 if loc[0].size == 0:
                     continue
+                # Lấy điểm tại các vị trí ứng viên, sắp xếp giảm dần và lấy
+                # top_k để giới hạn số detections cho mỗi template/scale.
                 scores = match_map[loc]
                 order = np.argsort(scores)[::-1]
                 top_k = order[: self.max_detections_per_template]
@@ -116,6 +159,8 @@ class TemplateMatcher:
                     y = int(loc[0][idx])
                     x = int(loc[1][idx])
                     score = float(scores[idx])
+                    # Lưu `template_variant` (biến thể template sau khi xoay/scale)
+                    # để có thể resize chính xác khi xác nhận bằng CNN sau này.
                     results.append(
                         MatchResult(
                             template_name=template_name,
@@ -128,6 +173,9 @@ class TemplateMatcher:
                     )
         if not results:
             return []
+        # Áp dụng NMS để loại các bbox trùng lặp theo IoU. Hàm `nms_boxes`
+        # trả về chỉ số các bbox được giữ lại, sau đó giới hạn thêm theo
+        # `max_detections_per_template` để tránh quá tải kết quả.
         boxes = [r.bbox for r in results]
         scores = [r.match_score for r in results]
         keep = nms_boxes(boxes, scores, self.iou_threshold)
@@ -139,7 +187,15 @@ class TemplateMatcher:
         image_bgr: np.ndarray,
         templates: Dict[str, np.ndarray],
     ) -> List[MatchResult]:
-        """Khớp nhiều template và trả về danh sách kết quả."""
+        """Khớp nhiều template và trả về danh sách kết quả.
+
+        Args:
+            image_bgr: Ảnh đầu vào dạng BGR.
+            templates: Từ điển {tên_template: ảnh_bgr}.
+
+        Returns:
+            Danh sách `MatchResult`.
+        """
         if not templates:
             return []
         items = list(templates.items())
